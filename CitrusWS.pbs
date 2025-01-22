@@ -1,0 +1,105 @@
+#PBS -N Citrus
+#PBS -e ./
+#PBS -o ./
+#PBS -l nodes=comput36:ppn=24
+#PBS -l walltime=1200:00:00
+#PBS -q batch
+#PBS -V
+#PBS -S /bin/bash 
+
+
+NP=`cat $PBS_NODEDILE |wc -l`
+NN=`cat $PBS_NODEFILE | sort | uniq|tee /tmp/node.$$|wc -l`
+cat $PBS_NODEFILE > /tmp/nodefile.$$
+dir="/public/home/tahir/pangenome_citrus_final/clementina_to_pan5"
+cd $dir
+
+ref="/public/home/tahir/pangenome_citrus_final/clementina_to_pan5/pan5.fa"
+query="/public/home/tahir/pangenome_citrus_final/clementina_to_pan5/clementina.fa"
+res="clementina_to_pan5"
+
+nucmer -p $res $ref $query
+
+delta-filter -1 ${res}.delta > ${res}.rq.delta
+
+show-coords -clrT -I 0.95 -L 100 ${res}.rq.delta > ${res}.rq.coords
+
+perl get_absese_region.pl clementina_to_pan5.rq.coords  ref_absence.txt query_absence.txt
+
+perl get_seq.pl clementina.fa query_absence.txt query_absence.fa
+
+makeblastdb -in pan5.fa -title GDB -dbtype nucl -out gdb
+
+blastn -db gdb -query query_absence.fa -evalue 1e-5 -outfmt 6 -out query_blastn_res.txt
+
+perl get_coverage_filter.pl query_blastn_res.txt query_absence.fa query_absence_filter.fa query_absence_pav.txt
+
+perl sep_pav_according_species.pl query_absence_pav.txt 
+
+less query_blastn_res.txt | cut -f 1 | sort | uniq > mapped.pavs.txt
+
+grep '>' query_absence.fa | sed 's/>//' | sort > all.pavs.txt
+
+comm -2 -3 all.pavs.txt mapped.pavs.txt > unmapped.pavs.txt
+
+perl sep_pav_according_species2.pl unmapped.pavs.txt
+
+cat clementina.bed clementina2.bed | sortBed > clementina.all.bed
+
+grep -P "\tgene\t" clementina.gff3 > clementina_loci.gff3
+
+intersectBed -a clementina.all.bed -b clementina_loci.gff3 -wa -wb > clementina_pav_intersect_gene.gff3 
+
+perl get_pav_for_each.pl clementina.all.bed clementina_pav_intersect_gene.gff3 clementina.fa clementina_pav_region.txt clementina_pav_final.fa
+
+perl get_the_pav_res.pl clementina_pav_region.txt clementina_pav_final.fa clementina_pav_res.fa clementina_pav.agp clementina_pav.bed clementina
+
+intersectBed -a clementina_pav.bed -b clementina.gff3 -wa -wb > clementina_gene_relocation.txt
+
+perl get_gff3_file.pl clementina_gene_relocation.txt clementina_gene_relocation.gff3
+
+gffread clementina.gff3 -g clementina.fa -w exons.fa 
+
+cat exons.fa  | awk '/^>/ {if(N>0) printf("\n"); printf("%s\t",$0);N++;next;} {printf("%s",$0);} END {if(N>0) printf("\n");}' | awk -F '	' '{printf("%s\t%d\n",$0,length($2));}' | awk '{n=NF-1;print $1" "$2"\t"$n"\t"$NF}' | sort -k2,2 -k4,4nr | sort -k2,2 -u -s | awk '{print $1" "$2"\n"$3}' | fold -w 80 > exons_longest.fa
+
+cat pan5.fa clementina_pav_res.fa > pan_genome_1.fa
+
+blat pan_genome_1.fa exons_longest.fa output.psl
+
+sed '1,5'd output.psl | awk '$1/$11*100 >= 80{print $1"\t"$1/$11*100"\t"$10}' | sort -k3,3 -k1,1nr | sort -k3,3 -u -s | cut -f 3 | sort > mapped.gene.list
+
+grep '>' exons_longest.fa | awk '/>/{sub(/>/,"",$1);print $1}' | sort | uniq > all.gene.list
+
+comm -1 -3 mapped.gene.list all.gene.list > unmapped.clementina.genes.txt
+
+less unmapped.clementina.genes.txt | awk 'BEGIN{FS="."}{if(/^orange/){print $1"."$2}else{print $1}}' > unmapped_clementina_genes.txt
+
+grep -f unmapped_clementina_genes.txt clementina.gff3 | grep -P "\tgene\t" | awk '{split($9,array,/;/);sub(/ID=/,"",array[1]);print $1"\t"$4-1"\t"$5"\t"array[1]"\t.\t"$7}' | sortBed > unmapped_clementina_genes_list.txt
+
+cut -f 1,2,3 unmapped_clementina_genes_list.txt | awk '{print $0"\tclementina"}' > clementina3.bed
+
+cat clementina.bed clementina2.bed clementina3.bed | sortBed > clementina.all.bed
+
+intersectBed -a clementina.all.bed -b clementina_loci.gff3 -wa -wb > clementina_pav_intersect_gene_final.gff3 
+
+perl get_pav_for_each.pl clementina.all.bed clementina_pav_intersect_gene_final.gff3 clementina.fa clementina_pav_region_final.txt clementina_pavs_confirm_final.fa
+
+awk '{print $1"\t"$5"\t"$6"\t"$4"\t"$2"\t"$3}' clementina_pav_region_final.txt | bedtools merge -i stdin -c 4,5,6 -o collapse | awk '{split($4,name,/,/);split($5,start,/,/);split($6,end,/,/);l=length(end);print $1"\t"$2"\t"$3"\t"$1"_"$2"_"$3}' > clementina_pav_region_final2.txt
+
+awk '{print $1"\t"$5"\t"$6"\t"$4"\t"$2"\t"$3}' clementina_pav_region_final.txt | bedtools merge -i stdin -c 4,5,6 -o collapse | awk '{split($4,name,/,/);split($5,start,/,/);split($6,end,/,/);l=length(end);print $1"\t"start[1]"\t"end[l]"\t"name[1]"\t"$2"\t"$3}' > clementina_pav_region_final3.txt
+
+bedtools getfasta -fi clementina.fa -bed clementina_pav_region_final2.txt -name | fold -w 80 > clementina_pavs_confirm_final2.fa
+
+perl get_the_pav_res.pl clementina_pav_region_final3.txt clementina_pavs_confirm_final2.fa clementina_pav_res_final.fa clementina_pav_final.agp clementina_pav_final.bed clementina
+
+intersectBed -a clementina_pav_final.bed -b clementina.gff3 -wa -wb > clementina_gene_relocation_final.txt
+
+perl get_gff3_file.pl clementina_gene_relocation_final.txt clementina_gene_relocation_final.gff3
+
+cat pan5.fa clementina_pav_res_final.fa > citrus-pangenome-final.fa
+
+cat pan5.gff3 clementina_gene_relocation_final.gff3 > citrus-pangenome-final.gff3
+
+blat citrus-pangenome-final.fa exons_longest.fa output_final.psl
+
+rm /tmp/nodefile.$$
